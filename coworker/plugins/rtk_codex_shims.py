@@ -69,6 +69,10 @@ CODEX_CONFIG: Path = Path.home() / ".codex" / "config.toml"
 # both. The marker block is the same shape so disable is a single regex strip.
 ZPROFILE: Path = Path.home() / ".zprofile"
 BASH_PROFILE: Path = Path.home() / ".bash_profile"
+# Linux Codex spawns `bash -lc`, which sources ~/.bash_profile if it exists,
+# else ~/.profile. Many Linux/WSL boxes ship only ~/.profile, so without this
+# target the parity layer never loads on Linux.
+PROFILE: Path = Path.home() / ".profile"
 MARKER_BEGIN = "# >>> coworker-rtk-codex-shims (managed) >>>"
 MARKER_END = "# <<< coworker-rtk-codex-shims (managed) <<<"
 
@@ -164,7 +168,10 @@ if [ -n "${{_COWORKER_RTK_SHIM_ACTIVE:-}}" ]; then
 fi
 
 # On/off probe — Claude settings.json marker is single source of truth.
-if [ ! -f "$MARKER_FILE" ] || ! grep -q '_managed_by.*coworker-rtk' "$MARKER_FILE" 2>/dev/null; then
+# Use `command -p grep` (system default PATH), never bare `grep`: when this
+# shim dir is on PATH, a bare `grep` re-enters THIS shim before the recursion
+# guard below is exported, forking unbounded (~180k procs / OOM observed).
+if [ ! -f "$MARKER_FILE" ] || ! command -p grep -q '_managed_by.*coworker-rtk' "$MARKER_FILE" 2>/dev/null; then
     exec "$REAL_BIN" "$@"
 fi
 
@@ -305,12 +312,13 @@ def _profile_block_text() -> str:
     return (
         f"{MARKER_BEGIN}\n"
         f"# coworker rtk Codex CLI parity. Activates ONLY inside codex-launched\n"
-        f"# child shells (Codex injects /Users/.../.codex/tmp/arg0/codex-arg0XXX\n"
-        f"# into PATH before sourcing rc files). Interactive Terminal, IDE, cron,\n"
-        f"# Spotlight shells stay untouched — no recursion, no global PATH invasion.\n"
+        f"# child shells (Codex injects <home>/.codex/tmp/arg0/codex-arg0XXX\n"
+        f"# into PATH before sourcing rc files — /Users/... on macOS,\n"
+        f"# /home/... on Linux). Interactive Terminal, IDE, cron, Spotlight\n"
+        f"# shells stay untouched — no recursion, no global PATH invasion.\n"
         f"# Removed by `coworker rtk disable`.\n"
         f'case ":$PATH:" in\n'
-        f'    *":/Users/"*"/.codex/tmp/arg0/codex-arg0"*)\n'
+        f'    *"/.codex/tmp/arg0/codex-arg0"*)\n'
         f'        if [ -d "{SHIM_DIR}" ]; then\n'
         f'            export PATH="{SHIM_DIR}:$PATH"\n'
         f"        fi\n"
@@ -332,6 +340,11 @@ def _profile_targets() -> list[Path]:
         targets.append(ZPROFILE)
     if BASH_PROFILE.exists():
         targets.append(BASH_PROFILE)
+    # Linux fallback: `bash -lc` sources ~/.profile when ~/.bash_profile is
+    # absent. Patch it (only if it already exists — never create new dotfiles)
+    # so parity works on Linux/WSL boxes that ship only ~/.profile.
+    if sys.platform != "darwin" and PROFILE.exists() and BASH_PROFILE not in targets:
+        targets.append(PROFILE)
     return targets
 
 
@@ -388,7 +401,7 @@ def remove_codex_path(*, verbose: bool = True) -> bool:
         re.escape(MARKER_BEGIN) + r".*?" + re.escape(MARKER_END) + r"\n?",
         re.DOTALL,
     )
-    for profile in (ZPROFILE, BASH_PROFILE):
+    for profile in (ZPROFILE, BASH_PROFILE, PROFILE):
         if not profile.exists():
             continue
         text = profile.read_text()
@@ -413,7 +426,7 @@ def status() -> dict:
     )
     profile_block_present = False
     profile_targets = []
-    for profile in (ZPROFILE, BASH_PROFILE):
+    for profile in (ZPROFILE, BASH_PROFILE, PROFILE):
         if profile.exists() and MARKER_BEGIN in profile.read_text():
             profile_block_present = True
             profile_targets.append(str(profile))
