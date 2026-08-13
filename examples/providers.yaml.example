@@ -1,9 +1,21 @@
 # Copy this file to $XDG_CONFIG_HOME/coworker/providers.yaml (default: ~/.config/coworker/providers.yaml)
 # Then export the matching API keys before running coworker.
 #
-# All five providers speak the OpenAI chat-completions API; only base_url and env_key differ.
+# API providers speak the OpenAI chat-completions API. Providers may instead
+# select a supported local transport, such as transport: opencode_cli.
 # Pricing is per 1M tokens in USD. cache_input applies to providers that bill prefix-cache reads at a discount.
 # Set pricing: null to silence cost tracking for a provider.
+
+opencode:
+  # Routes through the authenticated OpenCode CLI instead of the raw Zen API.
+  transport: opencode_cli
+  command: opencode
+  cli_model_prefix: opencode/
+  cli_timeout_seconds: 600
+  default_model: deepseek-v4-flash-free
+  pricing:
+    deepseek-v4-flash-free: {input: 0.0, output: 0.0, cache_input: 0.0}
+  prefix_cache: false
 
 moonshot:
   base_url: https://api.moonshot.ai/v1
