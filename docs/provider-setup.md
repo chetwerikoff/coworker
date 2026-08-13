@@ -1,6 +1,6 @@
 # Provider setup
 
-Each provider needs (1) an API key in an environment variable and (2) a section in `providers.yaml`. The shipped `examples/providers.yaml.example` already covers all five — copy it and fill keys via env vars.
+API providers need (1) an API key in an environment variable and (2) a section in `providers.yaml`. A provider may instead select a supported local transport, such as the authenticated OpenCode CLI. The shipped `examples/providers.yaml.example` covers both forms.
 
 ## Resolution chain
 
@@ -45,6 +45,26 @@ If the resolved name is not a key in `providers.yaml`, `coworker` prints `unknow
 - **API key:** https://platform.openai.com/api-keys (set `OPENAI_API_KEY`).
 - **Default model:** `gpt-5-mini`. Useful when you specifically need OpenAI's quality/feature set; usually the most expensive option in this list.
 - **Prefix cache:** automatic on supported models.
+
+### OpenCode CLI
+
+- **Authentication:** install OpenCode and run `opencode auth login` once.
+- **Transport:** set `transport: opencode_cli`; `coworker` sends the prompt over stdin to `opencode run --format json` rather than calling the raw Zen endpoint.
+- **Isolation:** each completion runs with plugins and model tools disabled in a temporary working directory.
+- **Default model:** `deepseek-v4-flash-free`, mapped to `opencode/deepseek-v4-flash-free` by `cli_model_prefix`.
+- **Limits:** OpenCode does not expose a per-invocation output-token flag, so `--max-tokens` is conveyed as a response-length instruction rather than a hard transport limit.
+
+```yaml
+opencode:
+  transport: opencode_cli
+  command: opencode
+  cli_model_prefix: opencode/
+  cli_timeout_seconds: 600
+  default_model: deepseek-v4-flash-free
+  pricing:
+    deepseek-v4-flash-free: {input: 0.0, output: 0.0, cache_input: 0.0}
+  prefix_cache: false
+```
 
 ## Custom providers
 

@@ -9,6 +9,7 @@ import time
 
 from .config import BLOBS_ROOT, load_providers
 from .logger import get_cached_tokens, log_call
+from .opencode_cli import complete_via_opencode_cli
 from .profiles import load_profile
 from .providers import make_client, resolve_provider_and_model
 from .stats import cmd_stats
@@ -128,6 +129,23 @@ def _build_corpus(paths: list[str]) -> str:
     return "\n\n".join(docs) if docs else "(no files provided)"
 
 
+def _create_completion(
+    prov_cfg: dict,
+    model: str,
+    messages: list[dict],
+    max_tokens: int,
+):
+    """Dispatch a completion through the provider's configured transport."""
+    if prov_cfg.get("transport") == "opencode_cli":
+        return complete_via_opencode_cli(prov_cfg, model, messages, max_tokens)
+    client = make_client(prov_cfg)
+    return client.chat.completions.create(
+        model=model,
+        messages=messages,
+        max_tokens=max_tokens,
+    )
+
+
 def cmd_ask(args) -> int:
     allow_code = _resolve_allow_code(args)
     paths = args.paths or []
@@ -144,13 +162,8 @@ def cmd_ask(args) -> int:
     corpus = _build_corpus(paths)
     messages = build_messages(system_prompt, corpus, args.question, corpus_first=True)
 
-    client = make_client(prov_cfg)
     t0 = time.monotonic()
-    resp = client.chat.completions.create(
-        model=model,
-        messages=messages,
-        max_tokens=max_tokens,
-    )
+    resp = _create_completion(prov_cfg, model, messages, max_tokens)
     latency_ms = (time.monotonic() - t0) * 1000
 
     log_extra = _build_gate_log_extra(gate_errors, allow_code, paths)
@@ -235,13 +248,8 @@ def cmd_write(args) -> int:
         user_msg_spec,
     ]
 
-    client = make_client(prov_cfg)
     t0 = time.monotonic()
-    resp = client.chat.completions.create(
-        model=model,
-        messages=messages,
-        max_tokens=max_tokens,
-    )
+    resp = _create_completion(prov_cfg, model, messages, max_tokens)
     latency_ms = (time.monotonic() - t0) * 1000
 
     body = (resp.choices[0].message.content or "").strip()

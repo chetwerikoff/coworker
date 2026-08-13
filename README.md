@@ -5,8 +5,8 @@ Vendor-neutral CLI to delegate bulk I/O off your reasoning model.
 You pay top-tier prices for your reasoning model — you don't need to spend those tokens reading 600-line files, summarising git history, or drafting boilerplate. `coworker` routes that work to a cheaper provider while you keep the reasoning seat for the work that actually requires it.
 
 ```text
-Reasoning model    →    coworker     →    cheap provider
-(your top-tier)         (this CLI)        (Moonshot / DeepSeek / Groq / OpenRouter / OpenAI)
+Reasoning model    →    coworker     →    cheap provider or provider CLI
+(your top-tier)         (this CLI)        (Moonshot / DeepSeek / Groq / OpenRouter / OpenAI / OpenCode)
 ```
 
 ---
@@ -20,7 +20,7 @@ A small Python CLI with four subcommands:
 - **`coworker stats`** — local usage / cost / latency / cache-hit aggregates from the JSONL log.
 - **`coworker debug`** — inspect a logged corpus blob by sha256 prefix (when corpus logging is enabled).
 
-Five providers built in, all reached through their OpenAI-compatible `chat/completions` endpoint: **Moonshot**, **DeepSeek**, **Groq**, **OpenRouter**, **OpenAI**. Switching is a flag.
+Five API providers are included: **Moonshot**, **DeepSeek**, **Groq**, **OpenRouter**, and **OpenAI**. The **OpenCode CLI** transport is also supported for models whose raw Zen API quota differs from authenticated OpenCode CLI access. Switching is a flag.
 
 ## Why
 
@@ -88,7 +88,7 @@ Config is read from XDG-standard locations:
 
 ## Provider setup
 
-Each provider needs one environment variable. Set the key for whichever provider you actually use; you don't need keys for all five.
+API providers need one environment variable. OpenCode instead uses credentials managed by its own CLI.
 
 | Provider     | Env var                | Get a key                                |
 | ------------ | ---------------------- | ---------------------------------------- |
@@ -97,6 +97,7 @@ Each provider needs one environment variable. Set the key for whichever provider
 | Groq         | `GROQ_API_KEY`         | https://console.groq.com                 |
 | OpenRouter   | `OPENROUTER_API_KEY`   | https://openrouter.ai                    |
 | OpenAI       | `OPENAI_API_KEY`       | https://platform.openai.com              |
+| OpenCode CLI | —                      | Run `opencode auth login`                |
 
 Defaults (model, pricing, prefix-cache support) live in `providers.yaml` and are easy to override. See [`docs/provider-setup.md`](docs/provider-setup.md).
 
