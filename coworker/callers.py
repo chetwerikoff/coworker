@@ -66,7 +66,8 @@ def resolve_host_and_model_from_ancestry() -> tuple[str | None, str | None]:
 
         # Get basename of argv[0] only, never scan substrings across all args
         argv0_basename = os.path.basename(cmdline[0])
-        # Normalize by stripping .exe suffix (Windows launcher compatibility)
+        # OpenCode's entrypoint symlink targets an ELF file named opencode.exe, not Windows.
+        # Normalize .exe in argv[0] so the caller is identified as opencode.
         if argv0_basename.endswith(".exe"):
             argv0_basename = argv0_basename[:-4]
 
