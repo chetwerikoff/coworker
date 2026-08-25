@@ -14,26 +14,29 @@ _CALLER_MARKERS: tuple[tuple[str, tuple[str, ...]], ...] = (
 )
 
 
-def resolve_cursor_model_at_runtime() -> str | None:
+def resolve_host_and_model_from_ancestry() -> tuple[str | None, str | None]:
     """
-    Detect the Cursor model at runtime by walking process ancestry on Linux.
+    Resolve host and model by walking process ancestry on Linux.
 
-    Returns the model id if found via --model flag in cursor-agent process,
-    falls back to ~/.cursor/cli-config.json value if available, else None.
-    Only runs on Linux; returns None on other platforms or if detection fails.
+    Walks the process tree up from the current PID, checking each ancestor's
+    argv[0] basename and arguments against known agent patterns. Returns
+    (host, model) where host is one of: cursor, claude, codex, opencode, or
+    None if no match found. Model is extracted from Cursor argv --model flag
+    or ~/.cursor/cli-config.json fallback.
+
+    Returns (None, None) on non-Linux platforms or if no ancestor matches.
     """
     if not sys.platform.startswith("linux"):
-        return None
+        return None, None
 
     pid = os.getpid()
-    cursor_ancestor_found = False
     hop_count = 0
     max_hops = 32
 
-    # Walk up process tree looking for cursor-agent
     while pid > 1 and hop_count < max_hops:
         hop_count += 1
 
+        # Read parent PID from /proc/<pid>/status
         try:
             with open(f"/proc/{pid}/status") as f:
                 for line in f:
@@ -41,15 +44,15 @@ def resolve_cursor_model_at_runtime() -> str | None:
                         ppid = int(line.split()[1])
                         break
                 else:
-                    return None
+                    return None, None
         except (OSError, ValueError):
-            return None
+            return None, None
 
         # Detect self-referential PPid
         if ppid == pid:
             break
 
-        # Check if this process is cursor-agent
+        # Read command line from /proc/<ppid>/cmdline
         try:
             with open(f"/proc/{ppid}/cmdline", "rb") as f:
                 cmdline = f.read().decode("utf-8", errors="ignore").split("\0")
@@ -57,52 +60,81 @@ def resolve_cursor_model_at_runtime() -> str | None:
             pid = ppid
             continue
 
-        # Look for cursor-agent in the command
-        if any("cursor-agent" in arg for arg in cmdline):
-            cursor_ancestor_found = True
-            # Extract --model flag
-            for i, arg in enumerate(cmdline):
-                if arg == "--model" and i + 1 < len(cmdline):
-                    return cmdline[i + 1]
-            # Try --model=value format
-            for arg in cmdline:
-                if arg.startswith("--model="):
-                    return arg.split("=", 1)[1]
-            # Found cursor-agent but no --model; try config file
-            break
+        if not cmdline or not cmdline[0]:
+            pid = ppid
+            continue
+
+        # Get basename of argv[0] only, never scan substrings across all args
+        argv0_basename = os.path.basename(cmdline[0])
+
+        # Check against known agent patterns (match basename only, except for path check)
+        host = None
+        if argv0_basename == "cursor-agent" or any("/cursor-agent/versions/" in arg for arg in cmdline):
+            host = "cursor"
+        elif argv0_basename == "claude":
+            host = "claude"
+        elif argv0_basename == "codex":
+            host = "codex"
+        elif argv0_basename == "opencode":
+            host = "opencode"
+
+        if host:
+            model = None
+            # For Cursor, extract model from argv
+            if host == "cursor":
+                for i, arg in enumerate(cmdline):
+                    if arg == "--model" and i + 1 < len(cmdline):
+                        model = cmdline[i + 1]
+                        break
+                if not model:
+                    for arg in cmdline:
+                        if arg.startswith("--model="):
+                            model = arg.split("=", 1)[1]
+                            break
+                # Fallback to config file if model still not found
+                if not model:
+                    config_path = os.path.expanduser("~/.cursor/cli-config.json")
+                    try:
+                        with open(config_path) as f:
+                            config = json.load(f)
+                            model = config.get("model", {}).get("modelId")
+                    except (OSError, json.JSONDecodeError, KeyError, TypeError):
+                        pass
+
+            return host, model
 
         pid = ppid
 
-    # Only read config if we found a cursor-agent ancestor with no --model flag
-    if cursor_ancestor_found:
-        config_path = os.path.expanduser("~/.cursor/cli-config.json")
-        try:
-            with open(config_path) as f:
-                config = json.load(f)
-                return config.get("model", {}).get("modelId")
-        except (OSError, json.JSONDecodeError, KeyError, TypeError):
-            pass
-
-    return None
+    return None, None
 
 
 def identify_caller(
     environ: Mapping[str, str] | None = None,
 ) -> tuple[str, str | None]:
-    """Return the caller host and optional explicitly stamped model."""
+    """Return the caller host and optional explicitly stamped model.
+
+    Detection precedence:
+    1. COWORKER_HOST environment variable (authoritative override)
+    2. Process ancestry via /proc (primary on Linux)
+    3. Environment markers (fallback for non-Linux or when ancestry finds nothing)
+    4. unknown
+    """
     env = os.environ if environ is None else environ
     stamped = env.get("COWORKER_HOST")
     if stamped is not None:
         host, _, model = stamped.partition(":")
         return host or "unknown", model or None
 
+    # Try ancestry-based detection first (primary method on Linux)
+    host, model = resolve_host_and_model_from_ancestry()
+    if host:
+        return host, model
+
+    # Fallback to environment markers for non-Linux or when ancestry finds nothing
     for host, markers in _CALLER_MARKERS:
         if any(marker in env for marker in markers):
-            # Try to resolve Cursor model at runtime
-            model = None
-            if host == "cursor":
-                model = resolve_cursor_model_at_runtime()
-            return host, model
+            return host, None
+
     return "unknown", None
 
 

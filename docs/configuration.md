@@ -53,6 +53,22 @@ Unlisted hosts are treated as `unknown`. Cursor model restrictions require the
 caller to stamp `COWORKER_HOST=cursor:<model>`; otherwise the host is checked
 but the model restriction fails open.
 
+### Host detection
+
+On Linux, the host is determined by walking the process ancestry and matching
+against known agent signatures (via argv[0] basename or special path patterns).
+This provides reliable identification even when a supervisor (like Orca) injects
+configuration markers into the environment.
+
+On non-Linux platforms or when ancestry finds no known agent, detection falls
+back to environment markers: `CLAUDECODE`, `CURSOR_AGENT`/`CURSOR_INVOKED_AS`,
+`CODEX_HOME`, and `OPENCODE_CONFIG_DIR`.
+
+**Important:** `CODEX_HOME` and `OPENCODE_CONFIG_DIR` are unreliable as host
+identity signals because Orca (and similar supervisors) provision them for all
+child processes regardless of agent type. Always rely on process ancestry when
+available, and use `COWORKER_HOST` to explicitly override when needed.
+
 ## Environment variables
 
 | Variable                       | Effect                                                                    |

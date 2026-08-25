@@ -23,16 +23,12 @@ def clean_caller_env(monkeypatch):
     ],
 )
 def test_each_marker_resolves_to_host(clean_caller_env, monkeypatch, marker, value, expected_host):
-    # Disable runtime model resolution to test sniffing only
+    # Disable ancestry resolution to test env marker fallback
     monkeypatch.setattr("sys.platform", "darwin")
     monkeypatch.setenv(marker, value)
     host, model = identify_caller()
     assert host == expected_host
-    if expected_host == "cursor":
-        # Cursor on non-linux returns None for model
-        assert model is None
-    else:
-        assert model is None
+    assert model is None
 
 
 def test_coworker_host_overrides_conflicting_marker(clean_caller_env, monkeypatch):
@@ -60,7 +56,8 @@ def test_cursor_wins_over_inherited_claude_marker(clean_caller_env, monkeypatch)
     assert identify_caller() == ("cursor", None)
 
 
-def test_no_markers_resolves_unknown_and_denies(clean_caller_env):
+def test_no_markers_resolves_unknown_and_denies(clean_caller_env, monkeypatch):
+    monkeypatch.setattr("sys.platform", "darwin")
     policy = {"unknown": {"allow": False}}
     host, model = identify_caller()
     assert (host, model) == ("unknown", None)
@@ -99,44 +96,300 @@ def test_missing_policy_allows_everything(policy):
     assert is_caller_allowed("opencode", "some-model", policy) is True
 
 
-def test_cursor_resolves_model_at_runtime_from_proc(clean_caller_env, monkeypatch, tmp_path):
-    """Test Cursor model resolution from /proc on Linux."""
-    monkeypatch.setenv("CURSOR_AGENT", "1")
-    monkeypatch.delenv("COWORKER_HOST", raising=False)
-    
-    # Mock sys.platform to return linux
+def test_claude_ancestor_resolves_despite_orca_env_vars(clean_caller_env, monkeypatch, tmp_path):
+    """Regression: Claude ancestor resolves to claude despite CODEX_HOME and OPENCODE_CONFIG_DIR."""
+    # Simulate Orca environment that sets all supervisor markers
+    monkeypatch.setenv("CLAUDECODE", "1")
+    monkeypatch.setenv("CODEX_HOME", "/home/che/.config/orca/codex-accounts/70dc589f/home")
+    monkeypatch.setenv("OPENCODE_CONFIG_DIR", "/home/che/.config/orca/opencode-hooks/shared")
+
     monkeypatch.setattr("sys.platform", "linux")
-    
-    # Mock os.getpid() to return a test PID
+
     test_pid = 1000
     parent_pid = 999
     monkeypatch.setattr("os.getpid", lambda: test_pid)
-    
-    # Create mock /proc files
+
     proc_dir = tmp_path / "proc"
     proc_dir.mkdir()
-    
-    # Mock status file for current process
+
     status_file = proc_dir / str(test_pid) / "status"
     status_file.parent.mkdir(parents=True)
-    status_file.write_text(f"Name:\tpython\nPPid:\t{parent_pid}\n")
-    
-    # Mock cmdline file for parent process (cursor-agent with --model)
+    status_file.write_text(f"PPid:\t{parent_pid}\n")
+
+    # Parent is the real claude agent
     cmdline_file = proc_dir / str(parent_pid) / "cmdline"
     cmdline_file.parent.mkdir(parents=True)
-    cmdline_file.write_bytes(b"cursor-agent\x00--model\x00gpt-5.6-luna-high\x00")
-    
-    # Mock open to use our proc_dir
+    cmdline_file.write_bytes(b"/home/che/.local/bin/claude\x00--dangerously-skip-permissions\x00")
+
     original_open = open
-    
+
     def mock_open_proc(*args, **kwargs):
         path = args[0] if args else kwargs.get("file")
         if isinstance(path, str) and path.startswith("/proc/"):
             path = path.replace("/proc/", str(proc_dir) + "/")
         return original_open(path, *args[1:], **kwargs)
-    
+
     monkeypatch.setattr("builtins.open", mock_open_proc)
-    
+
+    host, model = identify_caller()
+    assert host == "claude", "Ancestry should resolve to claude, not codex from env markers"
+    assert model is None
+
+
+def test_opencode_ancestor_resolves_despite_codex_home(clean_caller_env, monkeypatch, tmp_path):
+    """OpenCode ancestor resolves to opencode despite CODEX_HOME being set."""
+    monkeypatch.setenv("CODEX_HOME", "/tmp/codex")
+    monkeypatch.setattr("sys.platform", "linux")
+
+    test_pid = 1000
+    parent_pid = 999
+    monkeypatch.setattr("os.getpid", lambda: test_pid)
+
+    proc_dir = tmp_path / "proc"
+    proc_dir.mkdir()
+
+    status_file = proc_dir / str(test_pid) / "status"
+    status_file.parent.mkdir(parents=True)
+    status_file.write_text(f"PPid:\t{parent_pid}\n")
+
+    cmdline_file = proc_dir / str(parent_pid) / "cmdline"
+    cmdline_file.parent.mkdir(parents=True)
+    cmdline_file.write_bytes(b"/home/che/.local/bin/opencode\x00--config\x00/tmp\x00")
+
+    original_open = open
+
+    def mock_open_proc(*args, **kwargs):
+        path = args[0] if args else kwargs.get("file")
+        if isinstance(path, str) and path.startswith("/proc/"):
+            path = path.replace("/proc/", str(proc_dir) + "/")
+        return original_open(path, *args[1:], **kwargs)
+
+    monkeypatch.setattr("builtins.open", mock_open_proc)
+
+    host, model = identify_caller()
+    assert host == "opencode"
+
+    # Verify policy denies opencode
+    policy = {"opencode": {"allow": False}, "unknown": {"allow": False}}
+    assert is_caller_allowed(host, model, policy) is False
+
+
+def test_codex_ancestor_resolves_to_codex(clean_caller_env, monkeypatch, tmp_path):
+    """Codex ancestor resolves to codex."""
+    monkeypatch.setattr("sys.platform", "linux")
+
+    test_pid = 1000
+    parent_pid = 999
+    monkeypatch.setattr("os.getpid", lambda: test_pid)
+
+    proc_dir = tmp_path / "proc"
+    proc_dir.mkdir()
+
+    status_file = proc_dir / str(test_pid) / "status"
+    status_file.parent.mkdir(parents=True)
+    status_file.write_text(f"PPid:\t{parent_pid}\n")
+
+    cmdline_file = proc_dir / str(parent_pid) / "cmdline"
+    cmdline_file.parent.mkdir(parents=True)
+    cmdline_file.write_bytes(b"/home/che/.local/bin/codex\x00--arg\x00")
+
+    original_open = open
+
+    def mock_open_proc(*args, **kwargs):
+        path = args[0] if args else kwargs.get("file")
+        if isinstance(path, str) and path.startswith("/proc/"):
+            path = path.replace("/proc/", str(proc_dir) + "/")
+        return original_open(path, *args[1:], **kwargs)
+
+    monkeypatch.setattr("builtins.open", mock_open_proc)
+
+    host, model = identify_caller()
+    assert host == "codex"
+    assert model is None
+
+
+def test_bash_with_claude_codex_in_args_must_not_match(clean_caller_env, monkeypatch, tmp_path):
+    """Bash ancestor with 'claude' and 'codex' in later args must NOT match."""
+    monkeypatch.setattr("sys.platform", "linux")
+
+    test_pid = 1000
+    bash_pid = 999
+    monkeypatch.setattr("os.getpid", lambda: test_pid)
+
+    proc_dir = tmp_path / "proc"
+    proc_dir.mkdir()
+
+    # Current process
+    status_file = proc_dir / str(test_pid) / "status"
+    status_file.parent.mkdir(parents=True)
+    status_file.write_text(f"PPid:\t{bash_pid}\n")
+
+    # Bash with 'claude' and 'codex' in arguments (from real snapshot)
+    # This should NOT match because argv[0] basename is 'bash', not 'claude' or 'codex'
+    cmdline_file = proc_dir / str(bash_pid) / "cmdline"
+    cmdline_file.parent.mkdir(parents=True)
+    cmdline_file.write_bytes(
+        b"/bin/bash\x00-c\x00source /tmp/snapshot.sh && export CLAUDE_PLUGIN_DATA=/tmp/codex\x00"
+    )
+
+    # Parent of bash is init (no more ancestors)
+    status_file = proc_dir / str(bash_pid) / "status"
+    status_file.write_text("PPid:\t1\n")
+
+    original_open = open
+
+    def mock_open_proc(*args, **kwargs):
+        path = args[0] if args else kwargs.get("file")
+        if isinstance(path, str) and path.startswith("/proc/"):
+            path = path.replace("/proc/", str(proc_dir) + "/")
+        return original_open(path, *args[1:], **kwargs)
+
+    monkeypatch.setattr("builtins.open", mock_open_proc)
+
+    host, model = identify_caller()
+    # Should fall back to env markers or unknown, not match the bash args
+    assert host != "claude"
+    assert host != "codex"
+
+
+def test_ancestry_wins_over_conflicting_env_marker(clean_caller_env, monkeypatch, tmp_path):
+    """Ancestry detection should win over conflicting environment marker."""
+    monkeypatch.setenv("OPENCODE_CONFIG_DIR", "/tmp/opencode")
+    monkeypatch.setattr("sys.platform", "linux")
+
+    test_pid = 1000
+    parent_pid = 999
+    monkeypatch.setattr("os.getpid", lambda: test_pid)
+
+    proc_dir = tmp_path / "proc"
+    proc_dir.mkdir()
+
+    status_file = proc_dir / str(test_pid) / "status"
+    status_file.parent.mkdir(parents=True)
+    status_file.write_text(f"PPid:\t{parent_pid}\n")
+
+    # Parent is claude, not opencode
+    cmdline_file = proc_dir / str(parent_pid) / "cmdline"
+    cmdline_file.parent.mkdir(parents=True)
+    cmdline_file.write_bytes(b"/home/che/.local/bin/claude\x00--arg\x00")
+
+    original_open = open
+
+    def mock_open_proc(*args, **kwargs):
+        path = args[0] if args else kwargs.get("file")
+        if isinstance(path, str) and path.startswith("/proc/"):
+            path = path.replace("/proc/", str(proc_dir) + "/")
+        return original_open(path, *args[1:], **kwargs)
+
+    monkeypatch.setattr("builtins.open", mock_open_proc)
+
+    host, model = identify_caller()
+    assert host == "claude", "Ancestry should win over OPENCODE_CONFIG_DIR env var"
+
+
+def test_ancestry_finds_nothing_env_markers_still_work(clean_caller_env, monkeypatch, tmp_path):
+    """When ancestry finds nothing, environment markers still work as fallback."""
+    monkeypatch.setenv("CLAUDECODE", "1")
+    monkeypatch.setattr("sys.platform", "linux")
+
+    test_pid = 1000
+    parent_pid = 999
+    monkeypatch.setattr("os.getpid", lambda: test_pid)
+
+    proc_dir = tmp_path / "proc"
+    proc_dir.mkdir()
+
+    status_file = proc_dir / str(test_pid) / "status"
+    status_file.parent.mkdir(parents=True)
+    status_file.write_text(f"PPid:\t{parent_pid}\n")
+
+    # Parent is unknown (not a recognized agent)
+    cmdline_file = proc_dir / str(parent_pid) / "cmdline"
+    cmdline_file.parent.mkdir(parents=True)
+    cmdline_file.write_bytes(b"some-unknown-process\x00--arg\x00")
+
+    # Parent has PPid 1 (end of chain)
+    status_file = proc_dir / str(parent_pid) / "status"
+    status_file.write_text("PPid:\t1\n")
+
+    original_open = open
+
+    def mock_open_proc(*args, **kwargs):
+        path = args[0] if args else kwargs.get("file")
+        if isinstance(path, str) and path.startswith("/proc/"):
+            path = path.replace("/proc/", str(proc_dir) + "/")
+        return original_open(path, *args[1:], **kwargs)
+
+    monkeypatch.setattr("builtins.open", mock_open_proc)
+
+    host, model = identify_caller()
+    assert host == "claude", "Should fallback to CLAUDECODE env marker when ancestry finds nothing"
+
+
+def test_coworker_host_wins_over_ancestry(clean_caller_env, monkeypatch, tmp_path):
+    """COWORKER_HOST env var still wins over ancestry."""
+    monkeypatch.setenv("COWORKER_HOST", "cursor:gpt-5.6-luna")
+    monkeypatch.setattr("sys.platform", "linux")
+
+    test_pid = 1000
+    parent_pid = 999
+    monkeypatch.setattr("os.getpid", lambda: test_pid)
+
+    proc_dir = tmp_path / "proc"
+    proc_dir.mkdir()
+
+    status_file = proc_dir / str(test_pid) / "status"
+    status_file.parent.mkdir(parents=True)
+    status_file.write_text(f"PPid:\t{parent_pid}\n")
+
+    # Parent is claude (not cursor)
+    cmdline_file = proc_dir / str(parent_pid) / "cmdline"
+    cmdline_file.parent.mkdir(parents=True)
+    cmdline_file.write_bytes(b"/home/che/.local/bin/claude\x00--arg\x00")
+
+    original_open = open
+
+    def mock_open_proc(*args, **kwargs):
+        path = args[0] if args else kwargs.get("file")
+        if isinstance(path, str) and path.startswith("/proc/"):
+            path = path.replace("/proc/", str(proc_dir) + "/")
+        return original_open(path, *args[1:], **kwargs)
+
+    monkeypatch.setattr("builtins.open", mock_open_proc)
+
+    host, model = identify_caller()
+    assert (host, model) == ("cursor", "gpt-5.6-luna"), "COWORKER_HOST should win over ancestry"
+
+
+def test_cursor_resolves_model_at_runtime_from_proc(clean_caller_env, monkeypatch, tmp_path):
+    """Test Cursor model resolution from /proc on Linux."""
+    monkeypatch.setattr("sys.platform", "linux")
+
+    test_pid = 1000
+    parent_pid = 999
+    monkeypatch.setattr("os.getpid", lambda: test_pid)
+
+    proc_dir = tmp_path / "proc"
+    proc_dir.mkdir()
+
+    status_file = proc_dir / str(test_pid) / "status"
+    status_file.parent.mkdir(parents=True)
+    status_file.write_text(f"PPid:\t{parent_pid}\n")
+
+    cmdline_file = proc_dir / str(parent_pid) / "cmdline"
+    cmdline_file.parent.mkdir(parents=True)
+    cmdline_file.write_bytes(b"cursor-agent\x00--model\x00gpt-5.6-luna-high\x00")
+
+    original_open = open
+
+    def mock_open_proc(*args, **kwargs):
+        path = args[0] if args else kwargs.get("file")
+        if isinstance(path, str) and path.startswith("/proc/"):
+            path = path.replace("/proc/", str(proc_dir) + "/")
+        return original_open(path, *args[1:], **kwargs)
+
+    monkeypatch.setattr("builtins.open", mock_open_proc)
+
     host, model = identify_caller()
     assert host == "cursor"
     assert model == "gpt-5.6-luna-high"
@@ -144,35 +397,33 @@ def test_cursor_resolves_model_at_runtime_from_proc(clean_caller_env, monkeypatc
 
 def test_cursor_resolves_model_with_model_equals_format(clean_caller_env, monkeypatch, tmp_path):
     """Test --model=value format extraction."""
-    monkeypatch.setenv("CURSOR_AGENT", "1")
-    monkeypatch.delenv("COWORKER_HOST", raising=False)
     monkeypatch.setattr("sys.platform", "linux")
-    
+
     test_pid = 1000
     parent_pid = 999
     monkeypatch.setattr("os.getpid", lambda: test_pid)
-    
+
     proc_dir = tmp_path / "proc"
     proc_dir.mkdir()
-    
+
     status_file = proc_dir / str(test_pid) / "status"
     status_file.parent.mkdir(parents=True)
     status_file.write_text(f"PPid:\t{parent_pid}\n")
-    
+
     cmdline_file = proc_dir / str(parent_pid) / "cmdline"
     cmdline_file.parent.mkdir(parents=True)
     cmdline_file.write_bytes(b"cursor-agent\x00--model=gpt-5.6-luna-medium\x00")
-    
+
     original_open = open
-    
+
     def mock_open_proc(*args, **kwargs):
         path = args[0] if args else kwargs.get("file")
         if isinstance(path, str) and path.startswith("/proc/"):
             path = path.replace("/proc/", str(proc_dir) + "/")
         return original_open(path, *args[1:], **kwargs)
-    
+
     monkeypatch.setattr("builtins.open", mock_open_proc)
-    
+
     host, model = identify_caller()
     assert host == "cursor"
     assert model == "gpt-5.6-luna-medium"
@@ -180,32 +431,28 @@ def test_cursor_resolves_model_with_model_equals_format(clean_caller_env, monkey
 
 def test_cursor_fallback_to_config_file(clean_caller_env, monkeypatch, tmp_path):
     """Test fallback to ~/.cursor/cli-config.json when --model not in argv."""
-    monkeypatch.setenv("CURSOR_AGENT", "1")
-    monkeypatch.delenv("COWORKER_HOST", raising=False)
     monkeypatch.setattr("sys.platform", "linux")
-    
+
     test_pid = 1000
     parent_pid = 999
     monkeypatch.setattr("os.getpid", lambda: test_pid)
-    
+
     proc_dir = tmp_path / "proc"
     proc_dir.mkdir()
-    
+
     status_file = proc_dir / str(test_pid) / "status"
     status_file.parent.mkdir(parents=True)
     status_file.write_text(f"PPid:\t{parent_pid}\n")
-    
-    # cursor-agent without --model flag
+
     cmdline_file = proc_dir / str(parent_pid) / "cmdline"
     cmdline_file.parent.mkdir(parents=True)
     cmdline_file.write_bytes(b"cursor-agent\x00--help\x00")
-    
-    # Create mock config file
+
     config_file = tmp_path / "cli-config.json"
     config_file.write_text('{"model": {"modelId": "gpt-5.6-luna-low"}}')
-    
+
     original_open = open
-    
+
     def mock_open_proc(*args, **kwargs):
         path = args[0] if args else kwargs.get("file")
         if isinstance(path, str) and path.startswith("/proc/"):
@@ -213,10 +460,10 @@ def test_cursor_fallback_to_config_file(clean_caller_env, monkeypatch, tmp_path)
         elif isinstance(path, str) and path.endswith("cli-config.json"):
             path = str(config_file)
         return original_open(path, *args[1:], **kwargs)
-    
+
     monkeypatch.setattr("builtins.open", mock_open_proc)
     monkeypatch.setattr("os.path.expanduser", lambda p: str(config_file) if "cli-config" in p else p)
-    
+
     host, model = identify_caller()
     assert host == "cursor"
     assert model == "gpt-5.6-luna-low"
@@ -227,7 +474,7 @@ def test_cursor_model_resolver_disabled_on_non_linux(clean_caller_env, monkeypat
     monkeypatch.setenv("CURSOR_AGENT", "1")
     monkeypatch.delenv("COWORKER_HOST", raising=False)
     monkeypatch.setattr("sys.platform", "darwin")
-    
+
     host, model = identify_caller()
     assert host == "cursor"
     assert model is None
@@ -235,36 +482,21 @@ def test_cursor_model_resolver_disabled_on_non_linux(clean_caller_env, monkeypat
 
 def test_cursor_model_resolver_handles_missing_proc_gracefully(clean_caller_env, monkeypatch):
     """Test graceful handling when /proc is not accessible."""
-    monkeypatch.setenv("CURSOR_AGENT", "1")
-    monkeypatch.delenv("COWORKER_HOST", raising=False)
     monkeypatch.setattr("sys.platform", "linux")
     monkeypatch.setattr("os.getpid", lambda: 1000)
-    
+
     def mock_open_fails(*args, **kwargs):
         raise OSError("No such file or directory")
-    
+
     monkeypatch.setattr("builtins.open", mock_open_fails)
-    
+
     host, model = identify_caller()
-    assert host == "cursor"
+    assert host == "unknown"
     assert model is None
-
-
-def test_coworker_host_takes_precedence_over_runtime_resolution(clean_caller_env, monkeypatch):
-    """Test that explicit COWORKER_HOST takes precedence over runtime resolution."""
-    monkeypatch.setenv("CURSOR_AGENT", "1")
-    monkeypatch.setenv("COWORKER_HOST", "cursor:composer-2.5")
-    monkeypatch.setattr("sys.platform", "linux")
-    
-    host, model = identify_caller()
-    assert host == "cursor"
-    assert model == "composer-2.5"
 
 
 def test_cursor_ancestry_chain_longer_than_32_hops_terminates(clean_caller_env, monkeypatch, tmp_path):
     """Test that ancestry walk terminates after 32 hops."""
-    monkeypatch.setenv("CURSOR_AGENT", "1")
-    monkeypatch.delenv("COWORKER_HOST", raising=False)
     monkeypatch.setattr("sys.platform", "linux")
 
     test_pid = 1000
@@ -291,14 +523,12 @@ def test_cursor_ancestry_chain_longer_than_32_hops_terminates(clean_caller_env, 
     monkeypatch.setattr("builtins.open", mock_open_proc)
 
     host, model = identify_caller()
-    assert host == "cursor"
+    assert host == "unknown"
     assert model is None
 
 
 def test_cursor_ancestry_self_referential_ppid_terminates(clean_caller_env, monkeypatch, tmp_path):
     """Test that ancestry walk terminates on self-referential PPid."""
-    monkeypatch.setenv("CURSOR_AGENT", "1")
-    monkeypatch.delenv("COWORKER_HOST", raising=False)
     monkeypatch.setattr("sys.platform", "linux")
 
     test_pid = 1000
@@ -308,12 +538,10 @@ def test_cursor_ancestry_self_referential_ppid_terminates(clean_caller_env, monk
     proc_dir = tmp_path / "proc"
     proc_dir.mkdir()
 
-    # Current process points to parent
     status_file = proc_dir / str(test_pid) / "status"
     status_file.parent.mkdir(parents=True)
     status_file.write_text(f"PPid:\t{parent_pid}\n")
 
-    # Parent process has self-referential PPid
     status_file = proc_dir / str(parent_pid) / "status"
     status_file.parent.mkdir(parents=True)
     status_file.write_text(f"PPid:\t{parent_pid}\n")
@@ -329,14 +557,12 @@ def test_cursor_ancestry_self_referential_ppid_terminates(clean_caller_env, monk
     monkeypatch.setattr("builtins.open", mock_open_proc)
 
     host, model = identify_caller()
-    assert host == "cursor"
+    assert host == "unknown"
     assert model is None
 
 
 def test_cursor_ancestor_two_hops_up_is_found(clean_caller_env, monkeypatch, tmp_path):
     """Test that a Cursor ancestor two or more hops up the chain is found."""
-    monkeypatch.setenv("CURSOR_AGENT", "1")
-    monkeypatch.delenv("COWORKER_HOST", raising=False)
     monkeypatch.setattr("sys.platform", "linux")
 
     test_pid = 1000
@@ -347,7 +573,6 @@ def test_cursor_ancestor_two_hops_up_is_found(clean_caller_env, monkeypatch, tmp
     proc_dir = tmp_path / "proc"
     proc_dir.mkdir()
 
-    # Current process -> intermediate -> cursor-agent
     status_file = proc_dir / str(test_pid) / "status"
     status_file.parent.mkdir(parents=True)
     status_file.write_text(f"PPid:\t{intermediate_pid}\n")
@@ -359,7 +584,6 @@ def test_cursor_ancestor_two_hops_up_is_found(clean_caller_env, monkeypatch, tmp
     cmdline_file = proc_dir / str(intermediate_pid) / "cmdline"
     cmdline_file.write_bytes(b"some-process\x00--arg\x00")
 
-    # cursor-agent is 2 hops up
     status_file = proc_dir / str(cursor_pid) / "status"
     status_file.parent.mkdir(parents=True)
     status_file.write_text("PPid:\t0\n")
@@ -383,9 +607,7 @@ def test_cursor_ancestor_two_hops_up_is_found(clean_caller_env, monkeypatch, tmp
 
 
 def test_cursor_ancestor_with_agent_basename_recognized(clean_caller_env, monkeypatch, tmp_path):
-    """Test that a process with argv[0] basename 'agent' is recognized."""
-    monkeypatch.setenv("CURSOR_AGENT", "1")
-    monkeypatch.delenv("COWORKER_HOST", raising=False)
+    """Test that a process with /cursor-agent/versions/ path is recognized."""
     monkeypatch.setattr("sys.platform", "linux")
 
     test_pid = 1000
@@ -399,7 +621,6 @@ def test_cursor_ancestor_with_agent_basename_recognized(clean_caller_env, monkey
     status_file.parent.mkdir(parents=True)
     status_file.write_text(f"PPid:\t{parent_pid}\n")
 
-    # Process with /cursor-agent/versions/agent in path (matches "cursor-agent")
     cmdline_file = proc_dir / str(parent_pid) / "cmdline"
     cmdline_file.parent.mkdir(parents=True)
     cmdline_file.write_bytes(b"/cursor-agent/versions/1.0/agent\x00--model\x00composer-2.5\x00")
@@ -417,52 +638,3 @@ def test_cursor_ancestor_with_agent_basename_recognized(clean_caller_env, monkey
     host, model = identify_caller()
     assert host == "cursor"
     assert model == "composer-2.5"
-
-
-def test_no_cursor_ancestor_anywhere_resolves_none(clean_caller_env, monkeypatch, tmp_path):
-    """Test that when no Cursor ancestor is found, model resolves to None (not config file)."""
-    monkeypatch.setenv("CURSOR_AGENT", "1")
-    monkeypatch.delenv("COWORKER_HOST", raising=False)
-    monkeypatch.setattr("sys.platform", "linux")
-
-    test_pid = 1000
-    parent_pid = 999
-    monkeypatch.setattr("os.getpid", lambda: test_pid)
-
-    proc_dir = tmp_path / "proc"
-    proc_dir.mkdir()
-
-    status_file = proc_dir / str(test_pid) / "status"
-    status_file.parent.mkdir(parents=True)
-    status_file.write_text(f"PPid:\t{parent_pid}\n")
-
-    # Parent is not cursor-agent
-    cmdline_file = proc_dir / str(parent_pid) / "cmdline"
-    cmdline_file.parent.mkdir(parents=True)
-    cmdline_file.write_bytes(b"bash\x00--norc\x00")
-
-    # Stop walking (parent has PPid 1)
-    status_file = proc_dir / str(parent_pid) / "status"
-    status_file.write_text("PPid:\t1\n")
-
-    # Create a config file that would be read if the fallback wrongly triggered
-    config_file = tmp_path / "cli-config.json"
-    config_file.write_text('{"model": {"modelId": "gpt-5.6-luna-high"}}')
-
-    original_open = open
-
-    def mock_open_proc(*args, **kwargs):
-        path = args[0] if args else kwargs.get("file")
-        if isinstance(path, str) and path.startswith("/proc/"):
-            path = path.replace("/proc/", str(proc_dir) + "/")
-        elif isinstance(path, str) and path.endswith("cli-config.json"):
-            path = str(config_file)
-        return original_open(path, *args[1:], **kwargs)
-
-    monkeypatch.setattr("builtins.open", mock_open_proc)
-    monkeypatch.setattr("os.path.expanduser", lambda p: str(config_file) if "cli-config" in p else p)
-
-    host, model = identify_caller()
-    assert host == "cursor"
-    # Model must be None, NOT the value from config_file
-    assert model is None
