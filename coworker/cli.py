@@ -7,7 +7,8 @@ import pathlib
 import sys
 import time
 
-from .config import BLOBS_ROOT, load_providers
+from .callers import caller_label, identify_caller, is_caller_allowed
+from .config import BLOBS_ROOT, CALLERS_YAML, load_callers, load_providers
 from .logger import get_cached_tokens, log_call
 from .opencode_cli import complete_via_opencode_cli
 from .profiles import load_profile
@@ -73,6 +74,20 @@ def _emit_gate_decision(errors: list[str], allow_code: bool) -> bool:
     for msg in errors:
         print(f"[coworker] ERROR: {msg}", file=sys.stderr)
     return True
+
+
+def _enforce_caller_gate() -> bool:
+    """Return whether the current caller may use ask or write."""
+    host, model = identify_caller()
+    if is_caller_allowed(host, model, load_callers()):
+        return True
+    print(
+        f"[coworker] host '{caller_label(host, model)}' is not in the caller allowlist.\n"
+        "This is policy, not a failure. Read the corpus locally and continue.\n"
+        f"Allowlist: {CALLERS_YAML}",
+        file=sys.stderr,
+    )
+    return False
 
 
 def _build_gate_log_extra(
@@ -147,6 +162,9 @@ def _create_completion(
 
 
 def cmd_ask(args) -> int:
+    if not _enforce_caller_gate():
+        return 1
+
     allow_code = _resolve_allow_code(args)
     paths = args.paths or []
     _, gate_errors = _apply_gate(paths, allow_code)
@@ -208,6 +226,9 @@ def _strip_code_fences(text: str) -> str:
 
 
 def cmd_write(args) -> int:
+    if not _enforce_caller_gate():
+        return 1
+
     if getattr(args, "append", False) and args.stdout:
         print("[coworker] --append and --stdout are mutually exclusive.", file=sys.stderr)
         return 2
