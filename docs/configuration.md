@@ -1,6 +1,6 @@
 # Configuration reference
 
-`coworker` reads two YAML files. Everything else is environment variables.
+`coworker` reads three YAML files. Everything else is environment variables.
 
 ## `providers.yaml`
 
@@ -36,6 +36,23 @@ Top-level dict; each key is a profile you reference with `--profile <name>`.
 
 Required fields: `system_prompt` and `recommended_provider`. Everything else has a fallback.
 
+## `callers.yaml`
+
+Optional top-level dict; it controls which host runtimes may use `ask` and `write`.
+The file is read from `${XDG_CONFIG_HOME:-~/.config}/coworker/callers.yaml`.
+If it is missing, the caller gate is disabled.
+
+```yaml
+<host>:
+  allow: <bool>                   # Whether this host may invoke coworker.
+  deny_models: [<glob>, ...]      # Optional shell-style model globs to deny.
+```
+
+Supported host names are `claude`, `codex`, `cursor`, `opencode`, and `unknown`.
+Unlisted hosts are treated as `unknown`. Cursor model restrictions require the
+caller to stamp `COWORKER_HOST=cursor:<model>`; otherwise the host is checked
+but the model restriction fails open.
+
 ## Environment variables
 
 | Variable                       | Effect                                                                    |
@@ -44,6 +61,7 @@ Required fields: `system_prompt` and `recommended_provider`. Everything else has
 | `COWORKER_DEFAULT_PROVIDER`    | Fallback provider name when neither `--provider` nor `profile.recommended_provider` is set. Default: `moonshot`. |
 | `COWORKER_NO_LOG=1`            | Globally disable JSONL logging (also disables blob writes). |
 | `COWORKER_LOG_CORPUS=1`        | Enable sha256-deduplicated corpus blob writes. **Off by default**. See [`logging-privacy.md`](logging-privacy.md). |
+| `COWORKER_HOST`                | Optional authoritative caller stamp: `host` or `host:model`. Used by the caller allowlist gate. |
 | `XDG_CONFIG_HOME`              | Override config root. Default: `~/.config`. Coworker's dir is `${XDG_CONFIG_HOME}/coworker/`. |
 | `XDG_STATE_HOME`               | Override state root. Default: `~/.local/state`. Coworker's dir is `${XDG_STATE_HOME}/coworker/`. |
 
@@ -68,6 +86,7 @@ Required fields: `system_prompt` and `recommended_provider`. Everything else has
 `coworker` performs these checks at call time:
 
 - `providers.yaml` and `profiles.yaml` must exist and be parseable as YAML (`yaml.safe_load` only — `!!python/object` tags are rejected).
+- If present, `callers.yaml` must be parseable as YAML; if absent, caller gating is disabled.
 - Resolved provider must be a key in `providers.yaml`.
 - `<env_key>` must be set and non-empty.
 - For `coworker debug`, hash prefix must be ≥2 characters.

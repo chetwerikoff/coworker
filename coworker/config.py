@@ -25,6 +25,7 @@ BLOBS_ROOT = STATE_DIR / "blobs" / "sha256"
 
 PROVIDERS_YAML = CONFIG_DIR / "providers.yaml"
 PROFILES_YAML = CONFIG_DIR / "profiles.yaml"
+CALLERS_YAML = CONFIG_DIR / "callers.yaml"
 
 
 def load_providers() -> dict:
@@ -35,3 +36,10 @@ def load_providers() -> dict:
             f"Create one based on examples/providers.yaml.example."
         )
     return yaml.safe_load(PROVIDERS_YAML.read_text()) or {}
+
+
+def load_callers() -> dict:
+    """Load callers.yaml; missing file disables the caller gate."""
+    if not CALLERS_YAML.exists():
+        return {}
+    return yaml.safe_load(CALLERS_YAML.read_text()) or {}

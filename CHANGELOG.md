@@ -4,6 +4,10 @@ All notable changes to this project are documented in this file. Format follows 
 
 ## [Unreleased]
 
+### Added
+
+- **Caller allowlist gate for `ask` and `write`.** Optional `callers.yaml` policy restricts CLI use to approved host runtimes and can deny selected Cursor models; `COWORKER_HOST=host:model` provides an authoritative caller stamp. Missing policy keeps the gate disabled.
+
 ## [0.7.0] — 2026-06-01
 
 ### Changed
