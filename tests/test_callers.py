@@ -259,3 +259,210 @@ def test_coworker_host_takes_precedence_over_runtime_resolution(clean_caller_env
     host, model = identify_caller()
     assert host == "cursor"
     assert model == "composer-2.5"
+
+
+def test_cursor_ancestry_chain_longer_than_32_hops_terminates(clean_caller_env, monkeypatch, tmp_path):
+    """Test that ancestry walk terminates after 32 hops."""
+    monkeypatch.setenv("CURSOR_AGENT", "1")
+    monkeypatch.delenv("COWORKER_HOST", raising=False)
+    monkeypatch.setattr("sys.platform", "linux")
+
+    test_pid = 1000
+    monkeypatch.setattr("os.getpid", lambda: test_pid)
+
+    proc_dir = tmp_path / "proc"
+    proc_dir.mkdir()
+
+    # Create a chain of 35 processes (exceeds 32 hop limit)
+    for i in range(test_pid, test_pid + 35):
+        status_file = proc_dir / str(i) / "status"
+        status_file.parent.mkdir(parents=True)
+        ppid = i + 1
+        status_file.write_text(f"PPid:\t{ppid}\n")
+
+    original_open = open
+
+    def mock_open_proc(*args, **kwargs):
+        path = args[0] if args else kwargs.get("file")
+        if isinstance(path, str) and path.startswith("/proc/"):
+            path = path.replace("/proc/", str(proc_dir) + "/")
+        return original_open(path, *args[1:], **kwargs)
+
+    monkeypatch.setattr("builtins.open", mock_open_proc)
+
+    host, model = identify_caller()
+    assert host == "cursor"
+    assert model is None
+
+
+def test_cursor_ancestry_self_referential_ppid_terminates(clean_caller_env, monkeypatch, tmp_path):
+    """Test that ancestry walk terminates on self-referential PPid."""
+    monkeypatch.setenv("CURSOR_AGENT", "1")
+    monkeypatch.delenv("COWORKER_HOST", raising=False)
+    monkeypatch.setattr("sys.platform", "linux")
+
+    test_pid = 1000
+    parent_pid = 999
+    monkeypatch.setattr("os.getpid", lambda: test_pid)
+
+    proc_dir = tmp_path / "proc"
+    proc_dir.mkdir()
+
+    # Current process points to parent
+    status_file = proc_dir / str(test_pid) / "status"
+    status_file.parent.mkdir(parents=True)
+    status_file.write_text(f"PPid:\t{parent_pid}\n")
+
+    # Parent process has self-referential PPid
+    status_file = proc_dir / str(parent_pid) / "status"
+    status_file.parent.mkdir(parents=True)
+    status_file.write_text(f"PPid:\t{parent_pid}\n")
+
+    original_open = open
+
+    def mock_open_proc(*args, **kwargs):
+        path = args[0] if args else kwargs.get("file")
+        if isinstance(path, str) and path.startswith("/proc/"):
+            path = path.replace("/proc/", str(proc_dir) + "/")
+        return original_open(path, *args[1:], **kwargs)
+
+    monkeypatch.setattr("builtins.open", mock_open_proc)
+
+    host, model = identify_caller()
+    assert host == "cursor"
+    assert model is None
+
+
+def test_cursor_ancestor_two_hops_up_is_found(clean_caller_env, monkeypatch, tmp_path):
+    """Test that a Cursor ancestor two or more hops up the chain is found."""
+    monkeypatch.setenv("CURSOR_AGENT", "1")
+    monkeypatch.delenv("COWORKER_HOST", raising=False)
+    monkeypatch.setattr("sys.platform", "linux")
+
+    test_pid = 1000
+    intermediate_pid = 999
+    cursor_pid = 998
+    monkeypatch.setattr("os.getpid", lambda: test_pid)
+
+    proc_dir = tmp_path / "proc"
+    proc_dir.mkdir()
+
+    # Current process -> intermediate -> cursor-agent
+    status_file = proc_dir / str(test_pid) / "status"
+    status_file.parent.mkdir(parents=True)
+    status_file.write_text(f"PPid:\t{intermediate_pid}\n")
+
+    status_file = proc_dir / str(intermediate_pid) / "status"
+    status_file.parent.mkdir(parents=True)
+    status_file.write_text(f"PPid:\t{cursor_pid}\n")
+
+    cmdline_file = proc_dir / str(intermediate_pid) / "cmdline"
+    cmdline_file.write_bytes(b"some-process\x00--arg\x00")
+
+    # cursor-agent is 2 hops up
+    status_file = proc_dir / str(cursor_pid) / "status"
+    status_file.parent.mkdir(parents=True)
+    status_file.write_text("PPid:\t0\n")
+
+    cmdline_file = proc_dir / str(cursor_pid) / "cmdline"
+    cmdline_file.write_bytes(b"cursor-agent\x00--model\x00gpt-5.6-luna-high\x00")
+
+    original_open = open
+
+    def mock_open_proc(*args, **kwargs):
+        path = args[0] if args else kwargs.get("file")
+        if isinstance(path, str) and path.startswith("/proc/"):
+            path = path.replace("/proc/", str(proc_dir) + "/")
+        return original_open(path, *args[1:], **kwargs)
+
+    monkeypatch.setattr("builtins.open", mock_open_proc)
+
+    host, model = identify_caller()
+    assert host == "cursor"
+    assert model == "gpt-5.6-luna-high"
+
+
+def test_cursor_ancestor_with_agent_basename_recognized(clean_caller_env, monkeypatch, tmp_path):
+    """Test that a process with argv[0] basename 'agent' is recognized."""
+    monkeypatch.setenv("CURSOR_AGENT", "1")
+    monkeypatch.delenv("COWORKER_HOST", raising=False)
+    monkeypatch.setattr("sys.platform", "linux")
+
+    test_pid = 1000
+    parent_pid = 999
+    monkeypatch.setattr("os.getpid", lambda: test_pid)
+
+    proc_dir = tmp_path / "proc"
+    proc_dir.mkdir()
+
+    status_file = proc_dir / str(test_pid) / "status"
+    status_file.parent.mkdir(parents=True)
+    status_file.write_text(f"PPid:\t{parent_pid}\n")
+
+    # Process with /cursor-agent/versions/agent in path (matches "cursor-agent")
+    cmdline_file = proc_dir / str(parent_pid) / "cmdline"
+    cmdline_file.parent.mkdir(parents=True)
+    cmdline_file.write_bytes(b"/cursor-agent/versions/1.0/agent\x00--model\x00composer-2.5\x00")
+
+    original_open = open
+
+    def mock_open_proc(*args, **kwargs):
+        path = args[0] if args else kwargs.get("file")
+        if isinstance(path, str) and path.startswith("/proc/"):
+            path = path.replace("/proc/", str(proc_dir) + "/")
+        return original_open(path, *args[1:], **kwargs)
+
+    monkeypatch.setattr("builtins.open", mock_open_proc)
+
+    host, model = identify_caller()
+    assert host == "cursor"
+    assert model == "composer-2.5"
+
+
+def test_no_cursor_ancestor_anywhere_resolves_none(clean_caller_env, monkeypatch, tmp_path):
+    """Test that when no Cursor ancestor is found, model resolves to None (not config file)."""
+    monkeypatch.setenv("CURSOR_AGENT", "1")
+    monkeypatch.delenv("COWORKER_HOST", raising=False)
+    monkeypatch.setattr("sys.platform", "linux")
+
+    test_pid = 1000
+    parent_pid = 999
+    monkeypatch.setattr("os.getpid", lambda: test_pid)
+
+    proc_dir = tmp_path / "proc"
+    proc_dir.mkdir()
+
+    status_file = proc_dir / str(test_pid) / "status"
+    status_file.parent.mkdir(parents=True)
+    status_file.write_text(f"PPid:\t{parent_pid}\n")
+
+    # Parent is not cursor-agent
+    cmdline_file = proc_dir / str(parent_pid) / "cmdline"
+    cmdline_file.parent.mkdir(parents=True)
+    cmdline_file.write_bytes(b"bash\x00--norc\x00")
+
+    # Stop walking (parent has PPid 1)
+    status_file = proc_dir / str(parent_pid) / "status"
+    status_file.write_text("PPid:\t1\n")
+
+    # Create a config file that would be read if the fallback wrongly triggered
+    config_file = tmp_path / "cli-config.json"
+    config_file.write_text('{"model": {"modelId": "gpt-5.6-luna-high"}}')
+
+    original_open = open
+
+    def mock_open_proc(*args, **kwargs):
+        path = args[0] if args else kwargs.get("file")
+        if isinstance(path, str) and path.startswith("/proc/"):
+            path = path.replace("/proc/", str(proc_dir) + "/")
+        elif isinstance(path, str) and path.endswith("cli-config.json"):
+            path = str(config_file)
+        return original_open(path, *args[1:], **kwargs)
+
+    monkeypatch.setattr("builtins.open", mock_open_proc)
+    monkeypatch.setattr("os.path.expanduser", lambda p: str(config_file) if "cli-config" in p else p)
+
+    host, model = identify_caller()
+    assert host == "cursor"
+    # Model must be None, NOT the value from config_file
+    assert model is None

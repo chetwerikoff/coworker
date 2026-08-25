@@ -17,65 +17,73 @@ _CALLER_MARKERS: tuple[tuple[str, tuple[str, ...]], ...] = (
 def resolve_cursor_model_at_runtime() -> str | None:
     """
     Detect the Cursor model at runtime by walking process ancestry on Linux.
-    
+
     Returns the model id if found via --model flag in cursor-agent process,
     falls back to ~/.cursor/cli-config.json value if available, else None.
     Only runs on Linux; returns None on other platforms or if detection fails.
     """
     if not sys.platform.startswith("linux"):
         return None
-    
-    try:
-        pid = os.getpid()
-        
-        # Walk up process tree looking for cursor-agent
-        while pid > 1:
-            try:
-                with open(f"/proc/{pid}/status", "r") as f:
-                    for line in f:
-                        if line.startswith("PPid:"):
-                            ppid = int(line.split()[1])
-                            break
-                    else:
-                        return None
-            except (OSError, ValueError):
-                return None
-            
-            # Check if this process is cursor-agent
-            try:
-                with open(f"/proc/{ppid}/cmdline", "rb") as f:
-                    cmdline = f.read().decode("utf-8", errors="ignore").split("\0")
-            except (OSError, UnicodeDecodeError):
-                pid = ppid
-                continue
-            
-            # Look for cursor-agent in the command
-            if any("cursor-agent" in arg for arg in cmdline):
-                # Extract --model flag
-                for i, arg in enumerate(cmdline):
-                    if arg == "--model" and i + 1 < len(cmdline):
-                        return cmdline[i + 1]
-                # Try --model=value format
-                for arg in cmdline:
-                    if arg.startswith("--model="):
-                        return arg.split("=", 1)[1]
-                # Not found in argv, try config file
-                break
-            
+
+    pid = os.getpid()
+    cursor_ancestor_found = False
+    hop_count = 0
+    max_hops = 32
+
+    # Walk up process tree looking for cursor-agent
+    while pid > 1 and hop_count < max_hops:
+        hop_count += 1
+
+        try:
+            with open(f"/proc/{pid}/status") as f:
+                for line in f:
+                    if line.startswith("PPid:"):
+                        ppid = int(line.split()[1])
+                        break
+                else:
+                    return None
+        except (OSError, ValueError):
+            return None
+
+        # Detect self-referential PPid
+        if ppid == pid:
+            break
+
+        # Check if this process is cursor-agent
+        try:
+            with open(f"/proc/{ppid}/cmdline", "rb") as f:
+                cmdline = f.read().decode("utf-8", errors="ignore").split("\0")
+        except (OSError, UnicodeDecodeError):
             pid = ppid
-        
-        # Fallback to ~/.cursor/cli-config.json
+            continue
+
+        # Look for cursor-agent in the command
+        if any("cursor-agent" in arg for arg in cmdline):
+            cursor_ancestor_found = True
+            # Extract --model flag
+            for i, arg in enumerate(cmdline):
+                if arg == "--model" and i + 1 < len(cmdline):
+                    return cmdline[i + 1]
+            # Try --model=value format
+            for arg in cmdline:
+                if arg.startswith("--model="):
+                    return arg.split("=", 1)[1]
+            # Found cursor-agent but no --model; try config file
+            break
+
+        pid = ppid
+
+    # Only read config if we found a cursor-agent ancestor with no --model flag
+    if cursor_ancestor_found:
         config_path = os.path.expanduser("~/.cursor/cli-config.json")
         try:
-            with open(config_path, "r") as f:
+            with open(config_path) as f:
                 config = json.load(f)
                 return config.get("model", {}).get("modelId")
         except (OSError, json.JSONDecodeError, KeyError, TypeError):
             pass
-        
-        return None
-    except Exception:
-        return None
+
+    return None
 
 
 def identify_caller(
