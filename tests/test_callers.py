@@ -638,3 +638,128 @@ def test_cursor_ancestor_with_agent_basename_recognized(clean_caller_env, monkey
     host, model = identify_caller()
     assert host == "cursor"
     assert model == "composer-2.5"
+
+
+def test_opencode_with_exe_suffix_resolves(clean_caller_env, monkeypatch, tmp_path):
+    """Test that argv[0] with .exe suffix (opencode.exe) resolves to opencode."""
+    monkeypatch.setattr("sys.platform", "linux")
+
+    test_pid = 1000
+    parent_pid = 999
+    monkeypatch.setattr("os.getpid", lambda: test_pid)
+
+    proc_dir = tmp_path / "proc"
+    proc_dir.mkdir()
+
+    status_file = proc_dir / str(test_pid) / "status"
+    status_file.parent.mkdir(parents=True)
+    status_file.write_text(f"PPid:\t{parent_pid}\n")
+
+    # OpenCode with .exe suffix (real case: symlink target)
+    cmdline_file = proc_dir / str(parent_pid) / "cmdline"
+    cmdline_file.parent.mkdir(parents=True)
+    cmdline_file.write_bytes(b"/home/che/.npm-global/lib/node_modules/opencode-ai/bin/opencode.exe\x00--arg\x00")
+
+    original_open = open
+
+    def mock_open_proc(*args, **kwargs):
+        path = args[0] if args else kwargs.get("file")
+        if isinstance(path, str) and path.startswith("/proc/"):
+            path = path.replace("/proc/", str(proc_dir) + "/")
+        return original_open(path, *args[1:], **kwargs)
+
+    monkeypatch.setattr("builtins.open", mock_open_proc)
+
+    host, model = identify_caller()
+    assert host == "opencode", "Should resolve opencode.exe to opencode host"
+    assert model is None
+
+    # Verify policy denies opencode
+    policy = {"opencode": {"allow": False}, "unknown": {"allow": False}}
+    assert is_caller_allowed(host, model, policy) is False
+
+
+def test_cursor_agent_with_exe_suffix_resolves(clean_caller_env, monkeypatch, tmp_path):
+    """Test that cursor-agent.exe resolves to cursor."""
+    monkeypatch.setattr("sys.platform", "linux")
+
+    test_pid = 1000
+    parent_pid = 999
+    monkeypatch.setattr("os.getpid", lambda: test_pid)
+
+    proc_dir = tmp_path / "proc"
+    proc_dir.mkdir()
+
+    status_file = proc_dir / str(test_pid) / "status"
+    status_file.parent.mkdir(parents=True)
+    status_file.write_text(f"PPid:\t{parent_pid}\n")
+
+    # cursor-agent.exe
+    cmdline_file = proc_dir / str(parent_pid) / "cmdline"
+    cmdline_file.parent.mkdir(parents=True)
+    cmdline_file.write_bytes(b"cursor-agent.exe\x00--model\x00gpt-5.6-luna-high\x00")
+
+    original_open = open
+
+    def mock_open_proc(*args, **kwargs):
+        path = args[0] if args else kwargs.get("file")
+        if isinstance(path, str) and path.startswith("/proc/"):
+            path = path.replace("/proc/", str(proc_dir) + "/")
+        return original_open(path, *args[1:], **kwargs)
+
+    monkeypatch.setattr("builtins.open", mock_open_proc)
+
+    host, model = identify_caller()
+    assert host == "cursor"
+    assert model == "gpt-5.6-luna-high"
+
+
+def test_near_miss_basenames_do_not_match(clean_caller_env, monkeypatch, tmp_path):
+    """Test that near-miss names (opencoded, codexy) do NOT match any host."""
+    monkeypatch.setattr("sys.platform", "linux")
+
+    test_pid = 1000
+    parent_pid = 999
+    monkeypatch.setattr("os.getpid", lambda: test_pid)
+
+    proc_dir = tmp_path / "proc"
+    proc_dir.mkdir()
+
+    # Test both near-miss cases by creating a chain with fallback
+    status_file = proc_dir / str(test_pid) / "status"
+    status_file.parent.mkdir(parents=True)
+    status_file.write_text(f"PPid:\t{parent_pid}\n")
+
+    # Parent is 'opencoded' (not a real agent)
+    cmdline_file = proc_dir / str(parent_pid) / "cmdline"
+    cmdline_file.parent.mkdir(parents=True)
+    cmdline_file.write_bytes(b"opencoded\x00--arg\x00")
+
+    # Grandparent is 'codexy' (also not a real agent)
+    grandparent_pid = 998
+    status_file = proc_dir / str(parent_pid) / "status"
+    status_file.write_text(f"PPid:\t{grandparent_pid}\n")
+
+    cmdline_file = proc_dir / str(grandparent_pid) / "cmdline"
+    cmdline_file.parent.mkdir(parents=True)
+    cmdline_file.write_bytes(b"codexy\x00--arg\x00")
+
+    # Great-grandparent is bash (also not matched)
+    ggp_pid = 1
+    status_file = proc_dir / str(grandparent_pid) / "status"
+    status_file.write_text(f"PPid:\t{ggp_pid}\n")
+
+    original_open = open
+
+    def mock_open_proc(*args, **kwargs):
+        path = args[0] if args else kwargs.get("file")
+        if isinstance(path, str) and path.startswith("/proc/"):
+            path = path.replace("/proc/", str(proc_dir) + "/")
+        return original_open(path, *args[1:], **kwargs)
+
+    monkeypatch.setattr("builtins.open", mock_open_proc)
+
+    host, model = identify_caller()
+    # No ancestor matched, so should return unknown
+    assert host == "unknown", "Near-miss names (opencoded, codexy) must not match any host"
+    assert model is None

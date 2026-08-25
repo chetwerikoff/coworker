@@ -66,6 +66,9 @@ def resolve_host_and_model_from_ancestry() -> tuple[str | None, str | None]:
 
         # Get basename of argv[0] only, never scan substrings across all args
         argv0_basename = os.path.basename(cmdline[0])
+        # Normalize by stripping .exe suffix (Windows launcher compatibility)
+        if argv0_basename.endswith(".exe"):
+            argv0_basename = argv0_basename[:-4]
 
         # Check against known agent patterns (match basename only, except for path check)
         host = None
