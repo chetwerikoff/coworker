@@ -60,14 +60,18 @@ You're hitting the provider's rate limit. `coworker` does not retry — by desig
 ## Empty response
 
 ```bash
-[coworker] empty response — try raising --max-tokens.
+[coworker] empty response: finish_reason=length completion_tokens=16384 reasoning_tokens=16000 reasoning_content_present=True reasoning_content_length=...
 ```
 
-The model returned `""`. Usually means `max_tokens` is too low — the model wrote a thinking preamble (you can't see it for non-reasoning models) and ran out of budget before the actual answer. Raise it:
+The model returned empty `content`. Diagnostics show finish reason, completion tokens, reasoning tokens, and reasoning-content presence/length; raw reasoning is never printed. No automatic retry occurs.
+
+If explicit `--max-tokens` is below profile `code` limit `16384`, omit it first so the profile supplies that limit:
 
 ```bash
-coworker ask --max-tokens 32000 ...
+coworker ask --profile code --paths <FILE.md> --question "..."
 ```
+
+If explicit `--max-tokens` is at least `16384`, `finish_reason=length` means that explicit limit is exhausted; increase the configured or explicit budget. If no override was passed, profile limit is exhausted. In either case, corpus/model may need a higher budget or local fallback.
 
 ## "no blob found for hash prefix"
 
