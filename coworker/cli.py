@@ -9,7 +9,7 @@ import time
 
 from .callers import caller_label, identify_caller, is_caller_allowed
 from .config import BLOBS_ROOT, CALLERS_YAML, load_callers, load_providers
-from .logger import get_cached_tokens, log_call
+from .logger import get_cached_tokens, log_call, response_diagnostics
 from .opencode_cli import complete_via_opencode_cli
 from .profiles import load_profile
 from .providers import make_client, resolve_provider_and_model
@@ -188,12 +188,36 @@ def cmd_ask(args) -> int:
 
     out = resp.choices[0].message.content or ""
     if not out.strip():
-        print("[coworker] empty response - try raising --max-tokens.", file=sys.stderr)
+        diagnostics = response_diagnostics(resp)
+        detail = (
+            f"finish_reason={diagnostics['finish_reason']} "
+            f"completion_tokens={diagnostics['completion_tokens']} "
+            f"reasoning_tokens={diagnostics['reasoning_tokens']} "
+            f"reasoning_content_present={diagnostics['reasoning_content_present']} "
+            f"reasoning_content_length={diagnostics['reasoning_content_length']}"
+        )
+        if diagnostics["finish_reason"] == "length":
+            profile_limit = profile.get("default_max_tokens_ask", 16384)
+            if args.max_tokens is not None and args.max_tokens < profile_limit:
+                guidance = (
+                    f"Remove --max-tokens and use profile limit ({profile_limit} tokens)."
+                )
+            elif args.max_tokens is not None:
+                guidance = f"Explicit limit ({args.max_tokens} tokens) exhausted."
+            else:
+                guidance = f"Profile limit ({profile_limit} tokens) exhausted."
+            print(
+                f"[coworker] empty response: {detail}. {guidance}",
+                file=sys.stderr,
+            )
+        else:
+            print(f"[coworker] empty response: {detail}.", file=sys.stderr)
         if not args.no_log:
             log_call(
                 resp, prov_name, prov_cfg, model, args.profile, "ask",
                 messages[1:], "", latency_ms, args.task_id, system_prompt,
                 extra=log_extra,
+                exit_code=3,
             )
         return 3
     print(out)

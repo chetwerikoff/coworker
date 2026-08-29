@@ -71,6 +71,36 @@ def get_cached_tokens(resp_usage: Any) -> int:
     return int(val) if isinstance(val, (int, float)) else 0
 
 
+def response_diagnostics(resp: Any) -> dict[str, Any]:
+    """Extract safe response diagnostics without retaining reasoning text."""
+    choices = getattr(resp, "choices", None) or []
+    message = getattr(choices[0], "message", None) if choices else None
+    usage = getattr(resp, "usage", None)
+
+    finish_reason = str(
+        getattr(choices[0], "finish_reason", "unknown") if choices else "unknown"
+    )
+    completion_tokens = getattr(usage, "completion_tokens", None)
+    if not isinstance(completion_tokens, (int, float)):
+        completion_tokens = None
+
+    details = getattr(usage, "completion_tokens_details", None)
+    reasoning_tokens = getattr(details, "reasoning_tokens", None)
+    if not isinstance(reasoning_tokens, (int, float)):
+        reasoning_tokens = None
+
+    reasoning_content = getattr(message, "reasoning_content", None)
+    return {
+        "finish_reason": finish_reason,
+        "completion_tokens": completion_tokens,
+        "reasoning_tokens": reasoning_tokens,
+        "reasoning_content_present": reasoning_content is not None,
+        "reasoning_content_length": (
+            len(reasoning_content) if isinstance(reasoning_content, str) else None
+        ),
+    }
+
+
 def log_call(
     resp: Any,
     provider_name: str,
@@ -86,6 +116,7 @@ def log_call(
     log_dir: pathlib.Path = LOG_DIR,
     blobs_root: pathlib.Path = BLOBS_ROOT,
     extra: dict | None = None,
+    exit_code: int = 0,
 ) -> None:
     """Two-tier log: JSONL metadata always; blob only if COWORKER_LOG_CORPUS=1.
 
@@ -95,13 +126,11 @@ def log_call(
     if os.environ.get("COWORKER_NO_LOG") == "1":
         return
     try:
+        diagnostics = response_diagnostics(resp)
         usage = getattr(resp, "usage", None)
         input_tokens = getattr(usage, "prompt_tokens", 0) or 0
         output_tokens = getattr(usage, "completion_tokens", 0) or 0
         cached_tokens = get_cached_tokens(usage)
-        finish_reason = str(
-            resp.choices[0].finish_reason if resp.choices else "unknown"
-        )
         cost = calc_cost(provider_cfg, model, input_tokens, output_tokens, cached_tokens)
 
         record: dict = {
@@ -114,12 +143,15 @@ def log_call(
             "gen_ai.usage.cached_tokens": cached_tokens,
             "coworker.cost_usd": cost,
             "latency_ms": latency_ms,
-            "gen_ai.response.finish_reason": finish_reason,
+            "gen_ai.response.finish_reason": diagnostics["finish_reason"],
             "coworker.system_hash": _system_hash(system_prompt) if system_prompt else "",
-            "coworker.exit_code": 0,
+            "coworker.exit_code": exit_code,
             "coworker.task_id": task_id,
             "coworker.subcommand": subcommand,
         }
+
+        if diagnostics["reasoning_tokens"] is not None:
+            record["gen_ai.usage.reasoning_tokens"] = diagnostics["reasoning_tokens"]
 
         if os.environ.get("COWORKER_LOG_CORPUS") == "1":
             payload, blob_hash = build_corpus_payload(user_messages, response_text)
