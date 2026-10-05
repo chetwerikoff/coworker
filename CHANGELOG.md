@@ -7,6 +7,11 @@ All notable changes to this project are documented in this file. Format follows 
 ### Added
 
 - **Caller allowlist gate for `ask` and `write`.** Optional `callers.yaml` policy restricts CLI use to approved host runtimes and can deny selected Cursor models; `COWORKER_HOST=host:model` provides an authoritative caller stamp. Missing policy keeps the gate disabled.
+- **OpenCode effort variant.** The `opencode_cli` transport accepts an optional `cli_variant` provider key and forwards it as `opencode run --variant`, so the reasoning effort is pinned in configuration instead of left to the model default.
+
+### Changed
+
+- **`ask` corpus lines are numbered.** Each file in the `ask` corpus is sent as `<file path='…' lines='numbered'>` with every line prefixed `N| `. Models previously had no line numbers to read and guessed `file:line` citations; they can now copy them. `write` reference files are unchanged.
 
 ## [0.7.0] — 2026-06-01
 

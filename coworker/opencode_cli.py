@@ -79,6 +79,9 @@ def complete_via_opencode_cli(
         "--model",
         cli_model,
     ]
+    variant = prov_cfg.get("cli_variant")
+    if variant:
+        cmd += ["--variant", str(variant)]
     env = os.environ.copy()
     env["OPENCODE_CONFIG_CONTENT"] = json.dumps(
         {
