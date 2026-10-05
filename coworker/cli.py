@@ -129,6 +129,13 @@ def build_messages(
     return messages
 
 
+def _number_lines(content: str) -> str:
+    """Prefix each line with its 1-based number so answers can cite exact file:line."""
+    lines = content.splitlines()
+    width = len(str(len(lines)))
+    return "\n".join(f"{n:>{width}}| {line}" for n, line in enumerate(lines, 1))
+
+
 def _build_corpus(paths: list[str]) -> str:
     docs = []
     for p in paths:
@@ -138,7 +145,7 @@ def _build_corpus(paths: list[str]) -> str:
         except Exception as e:
             print(f"[coworker] cannot read {p}: {e}", file=sys.stderr)
             sys.exit(2)
-        docs.append(f"<file path='{p}'>\n{content}\n</file>")
+        docs.append(f"<file path='{p}' lines='numbered'>\n{_number_lines(content)}\n</file>")
     if not paths and not sys.stdin.isatty():
         docs.append(f"<stdin>\n{sys.stdin.read()}\n</stdin>")
     return "\n\n".join(docs) if docs else "(no files provided)"

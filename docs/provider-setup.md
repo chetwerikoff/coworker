@@ -52,6 +52,7 @@ If the resolved name is not a key in `providers.yaml`, `coworker` prints `unknow
 - **Transport:** set `transport: opencode_cli`; `coworker` sends the prompt over stdin to `opencode run --format json` rather than calling the raw Zen endpoint.
 - **Isolation:** each completion runs with plugins and model tools disabled in a temporary working directory.
 - **Default model:** `deepseek-v4-flash-free`, mapped to `opencode/deepseek-v4-flash-free` by `cli_model_prefix`.
+- **Effort:** optional `cli_variant` (for example `low`, `medium`, `high`) is passed as `opencode run --variant`; omit it to use the model's default effort.
 - **Limits:** OpenCode does not expose a per-invocation output-token flag, so `--max-tokens` is conveyed as a response-length instruction rather than a hard transport limit.
 
 ```yaml

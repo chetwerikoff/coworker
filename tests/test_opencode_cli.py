@@ -156,3 +156,24 @@ def test_cli_keeps_api_transport_behavior(monkeypatch):
     result = cli._create_completion({}, "model", [], 100)
 
     assert result is expected
+
+
+def test_completion_forwards_configured_variant(monkeypatch):
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        event = {"type": "text", "part": {"text": "ok"}}
+        return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(event), stderr="")
+
+    monkeypatch.setattr("coworker.opencode_cli.shutil.which", lambda _: "/bin/opencode")
+    monkeypatch.setattr("coworker.opencode_cli.subprocess.run", fake_run)
+
+    complete_via_opencode_cli(
+        {"cli_model": "openai/gpt-6-luna", "cli_variant": "low"},
+        "model",
+        [{"role": "user", "content": "hello"}],
+        100,
+    )
+
+    assert captured["cmd"][-4:] == ["--model", "openai/gpt-6-luna", "--variant", "low"]
